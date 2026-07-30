@@ -49,7 +49,7 @@ const { obstacles } = buildWorld(scene);
 const slug = createSlug();
 scene.add(slug);
 
-window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt) };
+window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt), getSpeed: () => currentSpeed };
 
 const modeLabel = document.querySelector('#mode-label');
 const gamepadLabel = document.querySelector('#gamepad-label');
@@ -62,6 +62,18 @@ let grounded = true;
 let jumpWasHeld = false;
 const GRAVITY = 20;
 const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall wall with margin
+
+// Actual speed lags behind the target speed a mode implies, instead of
+// snapping to it — fast to speed up, slow to bleed off. This is what lets a
+// roll's speed carry through into a skulk (or a jump) as a "slide" rather
+// than instantly dropping to the skulk's own slower pace; the same system
+// applies uniformly, no roll/skulk-specific special-casing needed. Letting
+// go of movement entirely still stops crisply (STOP_DECEL) so it doesn't
+// feel floaty when lining up a gap.
+let currentSpeed = 0;
+const ACCEL_UP = 16;
+const SLIDE_DECEL = 5;
+const STOP_DECEL = 20;
 const camOffsetLocal = new THREE.Vector3(0, 2.3, -4.2);
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 3, -5);
@@ -137,7 +149,15 @@ function step(dt) {
   }
 
   const baseSpeed = 3.0;
-  const speed = baseSpeed * dims.speedMultiplier * input.moveAxis();
+  const moveAxis = input.moveAxis();
+  const targetSpeed = baseSpeed * dims.speedMultiplier * moveAxis;
+  const speedingUp = Math.abs(targetSpeed) > Math.abs(currentSpeed);
+  const decelRate = Math.abs(moveAxis) > 0.01 ? SLIDE_DECEL : STOP_DECEL;
+  const rate = speedingUp ? ACCEL_UP : decelRate;
+  const maxDelta = rate * dt;
+  const diff = targetSpeed - currentSpeed;
+  currentSpeed += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
+  const speed = currentSpeed;
 
   const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
   const desiredX = slug.position.x + forward.x * speed * dt;
