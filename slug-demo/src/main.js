@@ -85,9 +85,12 @@ const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 3, -5);
 
 function currentMode() {
-  if (input.roll()) return 'roll';
+  // Skulk overrides roll (not the other way around): hitting a skulk button
+  // mid-roll is a deliberate interrupt into that shape, e.g. bailing out of
+  // a roll into a crevice the moment a guard rounds the corner.
   if (input.wide()) return 'wide';
   if (input.tall()) return 'tall';
+  if (input.roll()) return 'roll';
   return 'normal';
 }
 
