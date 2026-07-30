@@ -146,7 +146,14 @@ export function updateSlug(slug, mode, speedAlongForward, dt) {
   );
 
   if (mode === 'roll') {
-    state.rollSpin += speedAlongForward * dt * 3.2;
+    // Wrapped to (-PI, PI] on every accumulation, not left to grow
+    // unbounded — a long roll (especially one carried through a jump) would
+    // otherwise build up many full turns, and unwinding that on exit would
+    // visibly spin the model through all of them instead of a small offset.
+    let spin = (state.rollSpin + speedAlongForward * dt * 3.2) % (Math.PI * 2);
+    if (spin > Math.PI) spin -= Math.PI * 2;
+    else if (spin < -Math.PI) spin += Math.PI * 2;
+    state.rollSpin = spin;
     state.visual.rotation.x = state.rollSpin;
   } else {
     state.visual.rotation.x *= 1 - Math.min(1, t * 2);
