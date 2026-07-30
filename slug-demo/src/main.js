@@ -67,12 +67,18 @@ const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall w
 // snapping to it — fast to speed up, slow to bleed off. This is what lets a
 // roll's speed carry through into a skulk (or a jump) as a "slide" rather
 // than instantly dropping to the skulk's own slower pace; the same system
-// applies uniformly, no roll/skulk-specific special-casing needed. Letting
-// go of movement entirely still stops crisply (STOP_DECEL) so it doesn't
-// feel floaty when lining up a gap.
+// applies uniformly, no roll/skulk-specific special-casing needed. Deceleration
+// is grounded-dependent: there's no traction to bleed speed off mid-air, so
+// AIR_DECEL barely touches it while airborne (a roll carried into a jump keeps
+// almost all its speed for the whole arc), then the gentler ground SLIDE_DECEL
+// takes over once you land — landing off a roll-jump into a skulk holds a
+// noticeably higher speed for noticeably longer than a same-mode transition
+// that never left the ground. Letting go of movement entirely while grounded
+// still stops crisply (STOP_DECEL) so it doesn't feel floaty lining up a gap.
 let currentSpeed = 0;
 const ACCEL_UP = 16;
-const SLIDE_DECEL = 5;
+const SLIDE_DECEL = 3;
+const AIR_DECEL = 1.2;
 const STOP_DECEL = 20;
 const camOffsetLocal = new THREE.Vector3(0, 2.3, -4.2);
 const camTarget = new THREE.Vector3();
@@ -152,7 +158,9 @@ function step(dt) {
   const moveAxis = input.moveAxis();
   const targetSpeed = baseSpeed * dims.speedMultiplier * moveAxis;
   const speedingUp = Math.abs(targetSpeed) > Math.abs(currentSpeed);
-  const decelRate = Math.abs(moveAxis) > 0.01 ? SLIDE_DECEL : STOP_DECEL;
+  let decelRate;
+  if (!grounded) decelRate = AIR_DECEL;
+  else decelRate = Math.abs(moveAxis) > 0.01 ? SLIDE_DECEL : STOP_DECEL;
   const rate = speedingUp ? ACCEL_UP : decelRate;
   const maxDelta = rate * dt;
   const diff = targetSpeed - currentSpeed;
