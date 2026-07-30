@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createSlug, updateSlug, BASE } from './slug.js';
-import { buildWorld, overlaps2D } from './world.js';
+import { buildWorld, obbOverlap, obbPushOut } from './world.js';
+import { input } from './input.js';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -8,11 +9,14 @@ app.innerHTML = `
   <canvas id="scene"></canvas>
   <div id="hud">
     <div id="hud-controls">
-      <strong>Move</strong> W/S &nbsp; <strong>Turn</strong> A/D<br/>
-      <strong>Skulk wide</strong> hold C &nbsp; <strong>Skulk tall</strong> hold V<br/>
-      <strong>Roll</strong> hold Shift
+      <strong>Move</strong> W/S / left stick &nbsp; <strong>Turn</strong> A/D / left stick<br/>
+      <strong>Skulk wide</strong> C / Square &nbsp; <strong>Skulk tall</strong> V / Triangle<br/>
+      <strong>Jump</strong> Space / Cross &nbsp; <strong>Roll</strong> Shift / R1
     </div>
-    <div id="hud-state">Mode: <span id="mode-label">normal</span></div>
+    <div id="hud-state">
+      Mode: <span id="mode-label">normal</span>
+      &nbsp;·&nbsp; <span id="gamepad-label">no controller</span>
+    </div>
   </div>
 `;
 
@@ -45,44 +49,46 @@ const { obstacles } = buildWorld(scene);
 const slug = createSlug();
 scene.add(slug);
 
-const keys = new Set();
-window.addEventListener('keydown', (e) => keys.add(e.key.toLowerCase()));
-window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
-window.__debug = { keys, slug, obstacles, frames: 0, step: (dt) => step(dt) };
+window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt) };
 
 const modeLabel = document.querySelector('#mode-label');
+const gamepadLabel = document.querySelector('#gamepad-label');
 
 let yaw = 0;
 let slugHeight = BASE.height;
+let slugY = 0;
+let vy = 0;
+let grounded = true;
+let jumpWasHeld = false;
+const GRAVITY = 20;
+const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall wall with margin
 const camOffsetLocal = new THREE.Vector3(0, 2.3, -4.2);
 const camTarget = new THREE.Vector3();
 const camPos = new THREE.Vector3(0, 3, -5);
 
 function currentMode() {
-  if (keys.has('shift')) return 'roll';
-  if (keys.has('c')) return 'wide';
-  if (keys.has('v')) return 'tall';
+  if (input.roll()) return 'roll';
+  if (input.wide()) return 'wide';
+  if (input.tall()) return 'tall';
   return 'normal';
 }
 
-function collides(x, z, hw, hl) {
-  // Rotated footprint approximated as an axis-aligned box (conservative but simple).
-  const c = Math.abs(Math.cos(yaw));
-  const s = Math.abs(Math.sin(yaw));
-  const projX = hw * c + hl * s;
-  const projZ = hw * s + hl * c;
+// The slug's vertical span is [slugY, slugY + slugHeight] (feet at slugY),
+// so an obstacle only matters if that span overlaps the obstacle's own
+// [bottomY, topY] band — this is what makes jumping clear a low wall and
+// skulking-short clear an overhang, independently of each other.
+function collides(x, z, yawAtTest, hw, hl) {
   for (const o of obstacles) {
-    if (o.bottomY > 0 && slugHeight <= o.bottomY) continue; // fits under this overhang
-    if (o.bottomY === 0 && o.topY < slugHeight) continue; // slug taller than a low obstacle: irrelevant
-    if (overlaps2D(x, z, projX, projZ, o.x, o.z, o.halfWidth, o.halfDepth)) return true;
+    if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
+    if (obbOverlap(x, z, yawAtTest, hw, hl, o.x, o.z, 0, o.halfWidth, o.halfDepth)) return true;
   }
   return false;
 }
 
 function resolveMove(nx, nz, hw, hl) {
-  if (!collides(nx, nz, hw, hl)) return [nx, nz];
-  if (!collides(nx, slug.position.z, hw, hl)) return [nx, slug.position.z];
-  if (!collides(slug.position.x, nz, hw, hl)) return [slug.position.x, nz];
+  if (!collides(nx, nz, yaw, hw, hl)) return [nx, nz];
+  if (!collides(nx, slug.position.z, yaw, hw, hl)) return [nx, slug.position.z];
+  if (!collides(slug.position.x, nz, yaw, hw, hl)) return [slug.position.x, nz];
   return [slug.position.x, slug.position.z];
 }
 
@@ -92,22 +98,45 @@ function step(dt) {
   window.__debug.frames++;
   const mode = currentMode();
   modeLabel.textContent = mode;
+  gamepadLabel.textContent = input.isGamepadConnected() ? 'controller connected' : 'no controller';
 
   const turnSpeed = mode === 'roll' ? 1.4 : mode === 'wide' ? 2.9 : 2.4;
-  let turn = 0;
-  if (keys.has('a')) turn += 1;
-  if (keys.has('d')) turn -= 1;
-  yaw += turn * turnSpeed * dt;
+  yaw += input.turnAxis() * turnSpeed * dt;
 
-  const moving = keys.has('w') || keys.has('s') ? 1 : 0;
-  const dims = updateSlug(slug, mode, moving, dt);
+  const dims = updateSlug(slug, mode, Math.abs(input.moveAxis()) > 0 ? 1 : 0, dt);
   slugHeight = dims.height;
 
+  // Depenetrate first: turning is never collision-gated, so the slug can
+  // rotate itself into a wedged overlap it wasn't in a moment ago. Clear
+  // that before resolving movement so it's never permanently stuck.
+  for (const o of obstacles) {
+    if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
+    const push = obbPushOut(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, 0, o.halfWidth, o.halfDepth);
+    if (push) {
+      slug.position.x += push.x;
+      slug.position.z += push.z;
+    }
+  }
+
+  // Jump: edge-triggered so holding the button doesn't re-fire mid-air,
+  // but a jump lands and re-triggers naturally if still held (bunny-hop).
+  const jumpHeld = input.jumpHeld();
+  if (jumpHeld && !jumpWasHeld && grounded) {
+    vy = JUMP_VELOCITY;
+    grounded = false;
+  }
+  jumpWasHeld = jumpHeld;
+
+  vy -= GRAVITY * dt;
+  slugY += vy * dt;
+  if (slugY <= 0) {
+    slugY = 0;
+    vy = 0;
+    grounded = true;
+  }
+
   const baseSpeed = 3.0;
-  let moveDir = 0;
-  if (keys.has('w')) moveDir += 1;
-  if (keys.has('s')) moveDir -= 0.6;
-  const speed = baseSpeed * dims.speedMultiplier * moveDir;
+  const speed = baseSpeed * dims.speedMultiplier * input.moveAxis();
 
   const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
   const desiredX = slug.position.x + forward.x * speed * dt;
@@ -116,13 +145,14 @@ function step(dt) {
   const [rx, rz] = resolveMove(desiredX, desiredZ, dims.halfWidth, dims.halfLength);
   slug.position.x = rx;
   slug.position.z = rz;
+  slug.position.y = slugY;
   slug.rotation.y = yaw;
 
   const desiredCamPos = camOffsetLocal.clone().applyEuler(new THREE.Euler(0, yaw, 0)).add(slug.position);
-  desiredCamPos.y = slug.position.y + camOffsetLocal.y;
+  desiredCamPos.y = slugY + camOffsetLocal.y;
   camPos.lerp(desiredCamPos, 1 - Math.exp(-6 * dt));
   camera.position.copy(camPos);
-  camTarget.lerp(new THREE.Vector3(slug.position.x, slug.position.y + 0.5, slug.position.z), 1 - Math.exp(-8 * dt));
+  camTarget.lerp(new THREE.Vector3(slug.position.x, slugY + 0.5, slug.position.z), 1 - Math.exp(-8 * dt));
   camera.lookAt(camTarget);
 
   renderer.render(scene, camera);

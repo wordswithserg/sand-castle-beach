@@ -48,5 +48,14 @@ body {
 
 #hud-state {
   font-weight: 600;
+}
+
+#mode-label {
   text-transform: capitalize;
+}
+
+#gamepad-label {
+  font-weight: 400;
+  opacity: 0.7;
+  text-transform: none;
 }
