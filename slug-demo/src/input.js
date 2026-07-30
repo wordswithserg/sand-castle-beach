@@ -4,20 +4,27 @@ const keys = new Set();
 window.addEventListener('keydown', (e) => keys.add(e.key.toLowerCase()));
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 
-let gamepadIndex = null;
 window.addEventListener('gamepadconnected', (e) => {
-  gamepadIndex = e.gamepad.index;
+  console.log(`[gamepad] connected: "${e.gamepad.id}" mapping=${e.gamepad.mapping || '(none)'}`);
 });
 window.addEventListener('gamepaddisconnected', (e) => {
-  if (gamepadIndex === e.gamepad.index) gamepadIndex = null;
+  console.log(`[gamepad] disconnected: "${e.gamepad.id}"`);
 });
 
 const DEADZONE = 0.2;
 
+// The 'gamepadconnected' event only fires for a connection that happens
+// while the page is listening — it's unreliable if the controller was
+// already on before the page loaded, or on some Bluetooth stacks. Poll
+// navigator.getGamepads() directly instead and just take the first
+// non-null slot; this is what actually detects the controller reliably.
 function pad() {
-  if (gamepadIndex === null) return null;
-  // Firefox/Chrome invalidate cached Gamepad objects; re-poll every call.
-  return navigator.getGamepads()[gamepadIndex] || null;
+  if (!navigator.getGamepads) return null;
+  const pads = navigator.getGamepads();
+  for (const p of pads) {
+    if (p) return p;
+  }
+  return null;
 }
 
 function axis(i) {
@@ -34,7 +41,11 @@ function button(i) {
 
 export const input = {
   keys,
-  isGamepadConnected: () => gamepadIndex !== null,
+  isGamepadConnected: () => pad() !== null,
+  gamepadInfo: () => {
+    const p = pad();
+    return p ? { id: p.id, mapping: p.mapping } : null;
+  },
 
   // -1..1, forward positive
   moveAxis() {

@@ -98,7 +98,8 @@ function step(dt) {
   window.__debug.frames++;
   const mode = currentMode();
   modeLabel.textContent = mode;
-  gamepadLabel.textContent = input.isGamepadConnected() ? 'controller connected' : 'no controller';
+  const gp = input.gamepadInfo();
+  gamepadLabel.textContent = gp ? `controller: ${gp.id} (${gp.mapping || 'no mapping'})` : 'no controller';
 
   const turnSpeed = mode === 'roll' ? 1.4 : mode === 'wide' ? 2.9 : 2.4;
   yaw += input.turnAxis() * turnSpeed * dt;
