@@ -49,7 +49,7 @@ const { obstacles } = buildWorld(scene);
 const slug = createSlug();
 scene.add(slug);
 
-window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt), getSpeed: () => currentSpeed };
+window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt), getSpeed: () => currentSpeed, isGrounded: () => grounded, getYaw: () => yaw, setY: (y) => { slugY = y; slug.position.y = y; }, setVy: (v) => { vy = v; } };
 
 const modeLabel = document.querySelector('#mode-label');
 const gamepadLabel = document.querySelector('#gamepad-label');
@@ -62,6 +62,19 @@ let grounded = true;
 let jumpWasHeld = false;
 const GRAVITY = 20;
 const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall wall with margin
+
+// Wall hop: flying into a wall while airborne reflects the horizontal
+// velocity off the wall's normal (specular bounce) instead of just stopping
+// dead. BOUNCE_RESTITUTION < 1 bleeds off some speed each bounce so it can't
+// be chained forever; BOUNCE_POP gives a small vertical kick so a bounce
+// reads as a genuine hop and can help reach a nearby ledge, not just a
+// horizontal ricochet. The cooldown stops the same wall contact re-firing
+// every frame while still touching it.
+let bounceCooldown = 0;
+const BOUNCE_RESTITUTION = 0.65;
+const BOUNCE_MIN_SPEED = 0.5;
+const BOUNCE_POP = 2.2;
+const BOUNCE_COOLDOWN_TIME = 0.25;
 
 // Actual speed lags behind the target speed a mode implies, instead of
 // snapping to it — fast to speed up, slow to bleed off. This is what lets a
@@ -101,9 +114,25 @@ function currentMode() {
 function collides(x, z, yawAtTest, hw, hl) {
   for (const o of obstacles) {
     if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
-    if (obbOverlap(x, z, yawAtTest, hw, hl, o.x, o.z, 0, o.halfWidth, o.halfDepth)) return true;
+    if (obbOverlap(x, z, yawAtTest, hw, hl, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth)) return true;
   }
   return false;
+}
+
+// Which obstacle (if any) is blocking the hypothetical position (x, z), and
+// which direction to bounce off it — reuses the depenetration push vector as
+// the wall's outward normal, since that's exactly the direction that clears
+// the overlap fastest.
+function findWallNormal(x, z, yawAtTest, hw, hl) {
+  for (const o of obstacles) {
+    if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
+    const push = obbPushOut(x, z, yawAtTest, hw, hl, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth);
+    if (push) {
+      const len = Math.hypot(push.x, push.z);
+      if (len > 1e-5) return { x: push.x / len, z: push.z / len };
+    }
+  }
+  return null;
 }
 
 function resolveMove(nx, nz, hw, hl) {
@@ -133,7 +162,7 @@ function step(dt) {
   // that before resolving movement so it's never permanently stuck.
   for (const o of obstacles) {
     if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
-    const push = obbPushOut(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, 0, o.halfWidth, o.halfDepth);
+    const push = obbPushOut(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth);
     if (push) {
       slug.position.x += push.x;
       slug.position.z += push.z;
@@ -149,12 +178,28 @@ function step(dt) {
   }
   jumpWasHeld = jumpHeld;
 
+  const prevSlugY = slugY;
   vy -= GRAVITY * dt;
   slugY += vy * dt;
-  if (slugY <= 0) {
-    slugY = 0;
+
+  // The floor is the base ground (0) unless we're falling down onto the top
+  // of a platform (a ledge) — "were at or above its top a moment ago" is
+  // what keeps a platform from also acting as a solid floor when it's
+  // really being approached from the side/below, where it should behave
+  // like any other wall instead (handled by the normal collides() below).
+  let floor = 0;
+  for (const o of obstacles) {
+    if (!o.platform || prevSlugY < o.topY - 0.01) continue;
+    if (!obbOverlap(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth)) continue;
+    if (o.topY > floor) floor = o.topY;
+  }
+
+  if (slugY <= floor) {
+    slugY = floor;
     vy = 0;
     grounded = true;
+  } else {
+    grounded = false;
   }
 
   const baseSpeed = 3.0;
@@ -171,8 +216,33 @@ function step(dt) {
   const speed = currentSpeed;
 
   const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-  const desiredX = slug.position.x + forward.x * speed * dt;
-  const desiredZ = slug.position.z + forward.z * speed * dt;
+  let desiredX = slug.position.x + forward.x * speed * dt;
+  let desiredZ = slug.position.z + forward.z * speed * dt;
+
+  // Wall hop: flying into a wall while airborne bounces off it instead of
+  // just stopping. Grounded contact is unaffected — walking into a wall on
+  // the ground still just blocks/slides, same as always.
+  bounceCooldown = Math.max(0, bounceCooldown - dt);
+  if (!grounded && bounceCooldown <= 0 && collides(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength)) {
+    const normal = findWallNormal(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength);
+    if (normal) {
+      const vx = forward.x * speed;
+      const vz = forward.z * speed;
+      const dot = vx * normal.x + vz * normal.z;
+      const rvx = vx - 2 * dot * normal.x;
+      const rvz = vz - 2 * dot * normal.z;
+      const newSpeed = Math.hypot(rvx, rvz) * BOUNCE_RESTITUTION;
+      if (newSpeed > BOUNCE_MIN_SPEED) {
+        currentSpeed = newSpeed;
+        yaw = Math.atan2(rvx, rvz);
+        vy = Math.max(vy, BOUNCE_POP);
+        grounded = false;
+        bounceCooldown = BOUNCE_COOLDOWN_TIME;
+      }
+    }
+    desiredX = slug.position.x;
+    desiredZ = slug.position.z;
+  }
 
   const [rx, rz] = resolveMove(desiredX, desiredZ, dims.halfWidth, dims.halfLength);
   slug.position.x = rx;

@@ -77,38 +77,48 @@ function wallMaterial() {
   return new THREE.MeshStandardMaterial({ color: 0xb99a63, roughness: 0.9 });
 }
 
-// obstacles: array of axis-aligned solid boxes { x, z, halfWidth, halfDepth, bottomY, topY, id }
+function platformMaterial() {
+  return new THREE.MeshStandardMaterial({ color: 0xd7a94a, roughness: 0.75 });
+}
+
+// obstacles: array of boxes { x, z, yaw, halfWidth, halfDepth, bottomY, topY, id, platform }.
+// `yaw` lets a wall sit at an angle instead of only ever facing the corridor
+// straight-on — that's what makes a wall-hop bounce actually redirect you
+// somewhere new rather than straight back the way you came. `platform: true`
+// marks an obstacle as something you can land and stand on top of (a ledge)
+// rather than a pure side wall — see the landing check in main.js.
 export function buildWorld(scene) {
   const obstacles = [];
   const group = new THREE.Group();
   scene.add(group);
 
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(20, 80),
+    new THREE.PlaneGeometry(20, 100),
     new THREE.MeshStandardMaterial({ map: sandTexture(), roughness: 1 }),
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.position.set(0, 0, 30);
+  ground.position.set(0, 0, 35);
   ground.receiveShadow = true;
   group.add(ground);
 
-  function addBox({ x, z, halfWidth, halfDepth, bottomY, topY, id }) {
+  function addBox({ x, z, yaw = 0, halfWidth, halfDepth, bottomY, topY, id, platform = false }) {
     const mesh = new THREE.Mesh(
       new THREE.BoxGeometry(halfWidth * 2, topY - bottomY, halfDepth * 2),
-      wallMaterial(),
+      platform ? platformMaterial() : wallMaterial(),
     );
     mesh.position.set(x, (bottomY + topY) / 2, z);
+    mesh.rotation.y = yaw;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     group.add(mesh);
-    obstacles.push({ x, z, halfWidth, halfDepth, bottomY, topY, id });
+    obstacles.push({ x, z, yaw, halfWidth, halfDepth, bottomY, topY, id, platform });
   }
 
   // --- Corridor boundary walls (too tall to skulk or jump over) so every
   // gate actually has to be engaged with, not walked around in open sand ---
   const CORRIDOR_HALF = 2.7;
-  const CORRIDOR_Z = 18;
-  const CORRIDOR_HALF_LEN = 20;
+  const CORRIDOR_Z = 23;
+  const CORRIDOR_HALF_LEN = 27;
   addBox({ x: -CORRIDOR_HALF, z: CORRIDOR_Z, halfWidth: 0.15, halfDepth: CORRIDOR_HALF_LEN, bottomY: 0, topY: 2.6, id: 'boundaryL' });
   addBox({ x: CORRIDOR_HALF, z: CORRIDOR_Z, halfWidth: 0.15, halfDepth: CORRIDOR_HALF_LEN, bottomY: 0, topY: 2.6, id: 'boundaryR' });
 
@@ -137,6 +147,16 @@ export function buildWorld(scene) {
   });
   group.add(placeSign(makeSignSprite('Open stretch — hold Shift to ROLL'), 0, 1.6, 23));
 
+  // --- Wall hop zone: jump into an angled wall while airborne to bounce off
+  // it. Each wall is yawed so a straight-on approach gets redirected toward
+  // the ledge past it rather than just bouncing back the way you came. ---
+  const HOP_Z = 34;
+  addBox({ x: -1.0, z: HOP_Z, yaw: 0.4, halfWidth: 1.3, halfDepth: 0.15, bottomY: 0, topY: 2.0, id: 'hopWallA' });
+  addBox({ x: 1.6, z: HOP_Z + 1.5, halfWidth: 0.9, halfDepth: 0.9, bottomY: 0, topY: 1.1, id: 'ledgeA', platform: true });
+  addBox({ x: 1.0, z: HOP_Z + 5, yaw: -0.4, halfWidth: 1.3, halfDepth: 0.15, bottomY: 0, topY: 2.0, id: 'hopWallB' });
+  addBox({ x: -1.6, z: HOP_Z + 6.5, halfWidth: 0.9, halfDepth: 0.9, bottomY: 0, topY: 1.5, id: 'ledgeB', platform: true });
+  group.add(placeSign(makeSignSprite('Wall hop: jump into an angled wall to bounce off it'), 0, 1.6, HOP_Z - 1.6));
+
   // --- Start sign ---
   group.add(placeSign(makeSignSprite('W/S move, A/D turn, C wide, V tall, Space jump, Shift roll'), 0, 1.6, -1.5));
 
@@ -145,10 +165,10 @@ export function buildWorld(scene) {
     new THREE.OctahedronGeometry(0.35, 0),
     new THREE.MeshStandardMaterial({ color: 0xffd35c, roughness: 0.2, metalness: 0.3, emissive: 0x553600, emissiveIntensity: 0.3 }),
   );
-  goal.position.set(0, 0.6, 36);
+  goal.position.set(0, 0.6, 48);
   goal.castShadow = true;
   group.add(goal);
-  group.add(placeSign(makeSignSprite('Treasure! Demo course complete'), 0, 1.7, 35));
+  group.add(placeSign(makeSignSprite('Treasure! Demo course complete'), 0, 1.7, 47));
 
   return { obstacles, goalMesh: goal };
 }
