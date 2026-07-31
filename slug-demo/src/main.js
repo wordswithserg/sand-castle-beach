@@ -76,7 +76,7 @@ const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall w
 // immediately re-triggering a cling the instant movement resumes.
 let wallHop = null; // { normal: {x, z}, timer } while clinging; null otherwise
 let wallHopCooldown = 0;
-const WALL_HOP_WINDOW = 0.55;
+const WALL_HOP_WINDOW = 0.19; // 65% shorter than the original 0.55s
 const WALL_HOP_AIM_TURN_SPEED = 6;
 const WALL_HOP_LAUNCH_SPEED = 4.5;
 const WALL_HOP_POP = 3.0;
