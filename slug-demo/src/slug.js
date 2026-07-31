@@ -7,13 +7,17 @@ export const BASE = {
   halfLength: 0.55,   // z
 };
 
-// Target non-uniform scale for each skulk mode. z (length) never changes —
-// only the cross-section morphs, which is the whole point of the mechanic.
+// Target non-uniform scale for each skulk mode. z (length) stays 1 for the
+// skulk modes — only the cross-section morphs there, which is the whole
+// point of the mechanic. `cling` (pressed flat against a wall mid wall-hop)
+// is the one mode that also squashes z, since it's meant to read as "splatted
+// against a flat surface" rather than a cross-section change.
 const MODE_SCALE = {
-  normal: { x: 1.0, y: 1.0 },
-  wide: { x: 1.5, y: 0.5 },   // short & wide — ducks under overhangs
-  tall: { x: 0.5, y: 1.7 },   // tall & narrow — slips through slits
-  roll: { x: 0.75, y: 0.75 }, // curled into a rough ball
+  normal: { x: 1.0, y: 1.0, z: 1.0 },
+  wide: { x: 1.5, y: 0.5, z: 1.0 },   // short & wide — ducks under overhangs
+  tall: { x: 0.5, y: 1.7, z: 1.0 },   // tall & narrow — slips through slits
+  roll: { x: 0.75, y: 0.75, z: 1.0 }, // curled into a rough ball
+  cling: { x: 1.3, y: 0.85, z: 0.3 }, // pressed flat against a wall
 };
 
 const MODE_SPEED = {
@@ -21,6 +25,7 @@ const MODE_SPEED = {
   wide: 0.75,
   tall: 0.85,
   roll: 2.2,
+  cling: 0,
 };
 
 function speckleMaterial() {
@@ -117,7 +122,7 @@ export function createSlug() {
     visual,
     eyeGroup,
     mode: 'normal',
-    currentScale: new THREE.Vector2(1, 1),
+    currentScale: new THREE.Vector3(1, 1, 1),
     rollSpin: 0,
   };
 
@@ -132,15 +137,20 @@ export function updateSlug(slug, mode, speedAlongForward, dt) {
   state.mode = mode;
   const target = MODE_SCALE[mode];
 
-  const lerpSpeed = mode === 'roll' ? 10 : 7;
+  // Cling gets the fastest lerp of all — the wall-hop aim window is very
+  // short (0.1s in main.js), so the squash needs to read as "already stuck
+  // to the wall" almost immediately on contact rather than still easing in
+  // by the time the window closes.
+  const lerpSpeed = mode === 'roll' ? 10 : mode === 'cling' ? 22 : 7;
   const t = 1 - Math.exp(-lerpSpeed * dt);
   state.currentScale.x += (target.x - state.currentScale.x) * t;
   state.currentScale.y += (target.y - state.currentScale.y) * t;
+  state.currentScale.z += (target.z - state.currentScale.z) * t;
 
-  state.visual.scale.set(state.currentScale.x, state.currentScale.y, 1);
+  state.visual.scale.copy(state.currentScale);
 
-  // Tuck eye stalks in while rolling, otherwise keep them out.
-  const eyeTarget = mode === 'roll' ? 0.05 : 1.0;
+  // Tuck eye stalks in while rolling or clinging, otherwise keep them out.
+  const eyeTarget = mode === 'roll' ? 0.05 : mode === 'cling' ? 0.6 : 1.0;
   state.eyeGroup.scale.setScalar(
     state.eyeGroup.scale.x + (eyeTarget - state.eyeGroup.scale.x) * t,
   );
@@ -162,7 +172,7 @@ export function updateSlug(slug, mode, speedAlongForward, dt) {
   return {
     halfWidth: BASE.halfWidth * state.currentScale.x,
     height: BASE.height * state.currentScale.y,
-    halfLength: BASE.halfLength,
+    halfLength: BASE.halfLength * state.currentScale.z,
     speedMultiplier: MODE_SPEED[mode],
   };
 }
