@@ -16,6 +16,7 @@ app.innerHTML = `
     <div id="hud-state">
       Mode: <span id="mode-label">normal</span>
       &nbsp;·&nbsp; <span id="gamepad-label">no controller</span>
+      &nbsp;·&nbsp; <span id="wallhop-label"></span>
     </div>
   </div>
 `;
@@ -49,10 +50,11 @@ const { obstacles } = buildWorld(scene);
 const slug = createSlug();
 scene.add(slug);
 
-window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt), getSpeed: () => currentSpeed, isGrounded: () => grounded, getYaw: () => yaw, setY: (y) => { slugY = y; slug.position.y = y; }, setVy: (v) => { vy = v; } };
+window.__debug = { keys: input.keys, slug, obstacles, frames: 0, step: (dt) => step(dt), getSpeed: () => currentSpeed, isGrounded: () => grounded, getYaw: () => yaw, setY: (y) => { slugY = y; slug.position.y = y; }, setVy: (v) => { vy = v; }, getWallHop: () => wallHop };
 
 const modeLabel = document.querySelector('#mode-label');
 const gamepadLabel = document.querySelector('#gamepad-label');
+const wallhopLabel = document.querySelector('#wallhop-label');
 
 let yaw = 0;
 let slugHeight = BASE.height;
@@ -63,18 +65,22 @@ let jumpWasHeld = false;
 const GRAVITY = 20;
 const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall wall with margin
 
-// Wall hop: flying into a wall while airborne reflects the horizontal
-// velocity off the wall's normal (specular bounce) instead of just stopping
-// dead. BOUNCE_RESTITUTION < 1 bleeds off some speed each bounce so it can't
-// be chained forever; BOUNCE_POP gives a small vertical kick so a bounce
-// reads as a genuine hop and can help reach a nearby ledge, not just a
-// horizontal ricochet. The cooldown stops the same wall contact re-firing
-// every frame while still touching it.
-let bounceCooldown = 0;
-const BOUNCE_RESTITUTION = 0.65;
-const BOUNCE_MIN_SPEED = 0.5;
-const BOUNCE_POP = 2.2;
-const BOUNCE_COOLDOWN_TIME = 0.25;
+// Wall hop: flying into a wall while airborne doesn't bounce automatically.
+// Contact instead freezes the slug into a brief "cling" against the wall —
+// gravity and horizontal drift both pause — during which the player aims
+// with the stick/A-D. Only an explicit Jump press during that window
+// launches the slug, in the aimed direction (blended with the wall's normal
+// so it can't fire back into the wall). Letting the window expire with no
+// jump press just releases into an ordinary fall — no free bounce. A short
+// cooldown after launching (or timing out) stops the same wall contact from
+// immediately re-triggering a cling the instant movement resumes.
+let wallHop = null; // { normal: {x, z}, timer } while clinging; null otherwise
+let wallHopCooldown = 0;
+const WALL_HOP_WINDOW = 0.55;
+const WALL_HOP_AIM_TURN_SPEED = 6;
+const WALL_HOP_LAUNCH_SPEED = 4.5;
+const WALL_HOP_POP = 3.0;
+const WALL_HOP_COOLDOWN_TIME = 0.3;
 
 // Actual speed lags behind the target speed a mode implies, instead of
 // snapping to it — fast to speed up, slow to bleed off. This is what lets a
@@ -151,15 +157,19 @@ function step(dt) {
   const gp = input.gamepadInfo();
   gamepadLabel.textContent = gp ? `controller: ${gp.id} (${gp.mapping || 'no mapping'})` : 'no controller';
 
-  const turnSpeed = mode === 'roll' ? 1.4 : mode === 'wide' ? 2.9 : 2.4;
+  // Aiming a wall hop turns faster than normal movement does, since there's
+  // no forward motion to also be steering.
+  const turnSpeed = wallHop ? WALL_HOP_AIM_TURN_SPEED : (mode === 'roll' ? 1.4 : mode === 'wide' ? 2.9 : 2.4);
   yaw += input.turnAxis() * turnSpeed * dt;
 
   const dims = updateSlug(slug, mode, Math.abs(input.moveAxis()) > 0 ? 1 : 0, dt);
   slugHeight = dims.height;
 
-  // Depenetrate first: turning is never collision-gated, so the slug can
-  // rotate itself into a wedged overlap it wasn't in a moment ago. Clear
-  // that before resolving movement so it's never permanently stuck.
+  // Depenetrate first: turning is never collision-gated (including while
+  // aiming a wall hop), so the slug can rotate itself into a wedged overlap
+  // it wasn't in a moment ago. Clear that before anything else so it's
+  // never permanently stuck — and so aiming visibly pivots against the wall
+  // surface instead of clipping into it.
   for (const o of obstacles) {
     if (slugY + slugHeight <= o.bottomY || slugY >= o.topY) continue;
     const push = obbPushOut(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth);
@@ -169,86 +179,111 @@ function step(dt) {
     }
   }
 
-  // Jump: edge-triggered so holding the button doesn't re-fire mid-air,
-  // but a jump lands and re-triggers naturally if still held (bunny-hop).
+  // Edge-triggered so holding the button doesn't re-fire every frame — a
+  // fresh press is required both for a grounded jump and for launching out
+  // of a wall-hop cling, so simply holding Jump through the wall contact
+  // does not auto-launch you.
   const jumpHeld = input.jumpHeld();
-  if (jumpHeld && !jumpWasHeld && grounded) {
-    vy = JUMP_VELOCITY;
-    grounded = false;
-  }
+  const jumpPressed = jumpHeld && !jumpWasHeld;
   jumpWasHeld = jumpHeld;
 
-  const prevSlugY = slugY;
-  vy -= GRAVITY * dt;
-  slugY += vy * dt;
-
-  // The floor is the base ground (0) unless we're falling down onto the top
-  // of a platform (a ledge) — "were at or above its top a moment ago" is
-  // what keeps a platform from also acting as a solid floor when it's
-  // really being approached from the side/below, where it should behave
-  // like any other wall instead (handled by the normal collides() below).
-  let floor = 0;
-  for (const o of obstacles) {
-    if (!o.platform || prevSlugY < o.topY - 0.01) continue;
-    if (!obbOverlap(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth)) continue;
-    if (o.topY > floor) floor = o.topY;
-  }
-
-  if (slugY <= floor) {
-    slugY = floor;
-    vy = 0;
-    grounded = true;
-  } else {
-    grounded = false;
-  }
-
-  const baseSpeed = 3.0;
-  const moveAxis = input.moveAxis();
-  const targetSpeed = baseSpeed * dims.speedMultiplier * moveAxis;
-  const speedingUp = Math.abs(targetSpeed) > Math.abs(currentSpeed);
-  let decelRate;
-  if (!grounded) decelRate = AIR_DECEL;
-  else decelRate = Math.abs(moveAxis) > 0.01 ? SLIDE_DECEL : STOP_DECEL;
-  const rate = speedingUp ? ACCEL_UP : decelRate;
-  const maxDelta = rate * dt;
-  const diff = targetSpeed - currentSpeed;
-  currentSpeed += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
-  const speed = currentSpeed;
-
-  const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-  let desiredX = slug.position.x + forward.x * speed * dt;
-  let desiredZ = slug.position.z + forward.z * speed * dt;
-
-  // Wall hop: flying into a wall while airborne bounces off it instead of
-  // just stopping. Grounded contact is unaffected — walking into a wall on
-  // the ground still just blocks/slides, same as always.
-  bounceCooldown = Math.max(0, bounceCooldown - dt);
-  if (!grounded && bounceCooldown <= 0 && collides(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength)) {
-    const normal = findWallNormal(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength);
-    if (normal) {
-      const vx = forward.x * speed;
-      const vz = forward.z * speed;
-      const dot = vx * normal.x + vz * normal.z;
-      const rvx = vx - 2 * dot * normal.x;
-      const rvz = vz - 2 * dot * normal.z;
-      const newSpeed = Math.hypot(rvx, rvz) * BOUNCE_RESTITUTION;
-      if (newSpeed > BOUNCE_MIN_SPEED) {
-        currentSpeed = newSpeed;
-        yaw = Math.atan2(rvx, rvz);
-        vy = Math.max(vy, BOUNCE_POP);
-        grounded = false;
-        bounceCooldown = BOUNCE_COOLDOWN_TIME;
-      }
+  if (wallHop) {
+    // Clinging: position and gravity are both frozen. The player aims via
+    // the turn above; only an explicit Jump press launches, in the aimed
+    // direction blended with the wall's normal so it can't fire back into
+    // the wall. Timing out with no press just releases into a normal fall.
+    wallHop.timer += dt;
+    if (jumpPressed) {
+      const aimX = Math.sin(yaw);
+      const aimZ = Math.cos(yaw);
+      let dirX = aimX * 0.75 + wallHop.normal.x * 0.25;
+      let dirZ = aimZ * 0.75 + wallHop.normal.z * 0.25;
+      const len = Math.hypot(dirX, dirZ) || 1;
+      dirX /= len;
+      dirZ /= len;
+      yaw = Math.atan2(dirX, dirZ);
+      currentSpeed = WALL_HOP_LAUNCH_SPEED;
+      vy = WALL_HOP_POP;
+      grounded = false;
+      wallHop = null;
+      wallHopCooldown = WALL_HOP_COOLDOWN_TIME;
+    } else if (wallHop.timer >= WALL_HOP_WINDOW) {
+      wallHop = null;
+      wallHopCooldown = WALL_HOP_COOLDOWN_TIME;
     }
-    desiredX = slug.position.x;
-    desiredZ = slug.position.z;
+    slug.position.y = slugY;
+    slug.rotation.y = yaw;
+  } else {
+    if (jumpPressed && grounded) {
+      vy = JUMP_VELOCITY;
+      grounded = false;
+    }
+
+    const prevSlugY = slugY;
+    vy -= GRAVITY * dt;
+    slugY += vy * dt;
+
+    // The floor is the base ground (0) unless we're falling down onto the
+    // top of a platform (a ledge) — "were at or above its top a moment ago"
+    // is what keeps a platform from also acting as a solid floor when it's
+    // really being approached from the side/below, where it should behave
+    // like any other wall instead (handled by collides() below).
+    let floor = 0;
+    for (const o of obstacles) {
+      if (!o.platform || prevSlugY < o.topY - 0.01) continue;
+      if (!obbOverlap(slug.position.x, slug.position.z, yaw, dims.halfWidth, dims.halfLength, o.x, o.z, o.yaw, o.halfWidth, o.halfDepth)) continue;
+      if (o.topY > floor) floor = o.topY;
+    }
+
+    if (slugY <= floor) {
+      slugY = floor;
+      vy = 0;
+      grounded = true;
+    } else {
+      grounded = false;
+    }
+
+    const baseSpeed = 3.0;
+    const moveAxis = input.moveAxis();
+    const targetSpeed = baseSpeed * dims.speedMultiplier * moveAxis;
+    const speedingUp = Math.abs(targetSpeed) > Math.abs(currentSpeed);
+    let decelRate;
+    if (!grounded) decelRate = AIR_DECEL;
+    else decelRate = Math.abs(moveAxis) > 0.01 ? SLIDE_DECEL : STOP_DECEL;
+    const rate = speedingUp ? ACCEL_UP : decelRate;
+    const maxDelta = rate * dt;
+    const diff = targetSpeed - currentSpeed;
+    currentSpeed += Math.sign(diff) * Math.min(Math.abs(diff), maxDelta);
+    const speed = currentSpeed;
+
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    let desiredX = slug.position.x + forward.x * speed * dt;
+    let desiredZ = slug.position.z + forward.z * speed * dt;
+
+    // Contact with a wall while airborne starts a cling instead of moving
+    // into it — the actual launch only happens above, on a Jump press.
+    // Grounded contact is unaffected: walking into a wall on the ground
+    // still just blocks/slides, same as always.
+    wallHopCooldown = Math.max(0, wallHopCooldown - dt);
+    if (!grounded && wallHopCooldown <= 0 && collides(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength)) {
+      const normal = findWallNormal(desiredX, desiredZ, yaw, dims.halfWidth, dims.halfLength);
+      if (normal) {
+        wallHop = { normal, timer: 0 };
+        currentSpeed = 0;
+        vy = 0;
+      }
+      desiredX = slug.position.x;
+      desiredZ = slug.position.z;
+    }
+
+    const [rx, rz] = resolveMove(desiredX, desiredZ, dims.halfWidth, dims.halfLength);
+    slug.position.x = rx;
+    slug.position.z = rz;
+    slug.position.y = slugY;
+    slug.rotation.y = yaw;
   }
 
-  const [rx, rz] = resolveMove(desiredX, desiredZ, dims.halfWidth, dims.halfLength);
-  slug.position.x = rx;
-  slug.position.z = rz;
-  slug.position.y = slugY;
-  slug.rotation.y = yaw;
+  wallhopLabel.textContent = wallHop ? 'wall hop: aim + press Jump!' : '';
 
   const desiredCamPos = camOffsetLocal.clone().applyEuler(new THREE.Euler(0, yaw, 0)).add(slug.position);
   desiredCamPos.y = slugY + camOffsetLocal.y;

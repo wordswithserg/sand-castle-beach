@@ -147,15 +147,15 @@ export function buildWorld(scene) {
   });
   group.add(placeSign(makeSignSprite('Open stretch — hold Shift to ROLL'), 0, 1.6, 23));
 
-  // --- Wall hop zone: jump into an angled wall while airborne to bounce off
-  // it. Each wall is yawed so a straight-on approach gets redirected toward
-  // the ledge past it rather than just bouncing back the way you came. ---
+  // --- Wall hop zone: jump into an angled wall while airborne to cling to
+  // it, aim with the stick, then press Jump to launch. Each wall is yawed so
+  // an aimed launch can be sent toward the ledge past it. ---
   const HOP_Z = 34;
   addBox({ x: -1.0, z: HOP_Z, yaw: 0.4, halfWidth: 1.3, halfDepth: 0.15, bottomY: 0, topY: 2.0, id: 'hopWallA' });
   addBox({ x: 1.6, z: HOP_Z + 1.5, halfWidth: 0.9, halfDepth: 0.9, bottomY: 0, topY: 1.1, id: 'ledgeA', platform: true });
   addBox({ x: 1.0, z: HOP_Z + 5, yaw: -0.4, halfWidth: 1.3, halfDepth: 0.15, bottomY: 0, topY: 2.0, id: 'hopWallB' });
   addBox({ x: -1.6, z: HOP_Z + 6.5, halfWidth: 0.9, halfDepth: 0.9, bottomY: 0, topY: 1.5, id: 'ledgeB', platform: true });
-  group.add(placeSign(makeSignSprite('Wall hop: jump into an angled wall to bounce off it'), 0, 1.6, HOP_Z - 1.6));
+  group.add(placeSign(makeSignSprite('Wall hop: jump into a wall, aim with the stick, press Jump to launch'), 0, 1.6, HOP_Z - 1.6));
 
   // --- Start sign ---
   group.add(placeSign(makeSignSprite('W/S move, A/D turn, C wide, V tall, Space jump, Shift roll'), 0, 1.6, -1.5));
