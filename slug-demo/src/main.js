@@ -63,7 +63,7 @@ let vy = 0;
 let grounded = true;
 let jumpWasHeld = false;
 const GRAVITY = 20;
-const JUMP_VELOCITY = 5.9; // peak height v^2/2g ~= 0.87, clears the 0.55-tall wall with margin
+const JUMP_VELOCITY = 6.33; // peak height v^2/2g ~= 1.00, 15% higher than the old 5.9/~0.87 (height scales with v^2, so velocity scales by sqrt(1.15))
 
 // Wall hop: flying into a wall while airborne doesn't bounce automatically.
 // Contact instead freezes the slug into a brief "cling" against the wall —
@@ -79,7 +79,7 @@ let wallHopCooldown = 0;
 const WALL_HOP_WINDOW = 0.1;
 const WALL_HOP_AIM_TURN_SPEED = 6;
 const WALL_HOP_LAUNCH_SPEED = 4.5;
-const WALL_HOP_POP = 3.0;
+const WALL_HOP_POP = 3.15; // 10% higher than the old 3.0 (velocity scaled by sqrt(1.10) since height scales with v^2)
 const WALL_HOP_COOLDOWN_TIME = 0.3;
 
 // Actual speed lags behind the target speed a mode implies, instead of
